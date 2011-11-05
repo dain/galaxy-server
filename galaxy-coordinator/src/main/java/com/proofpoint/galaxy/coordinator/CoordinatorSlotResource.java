@@ -19,6 +19,8 @@ import com.google.common.base.Predicate;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
 import com.google.inject.Inject;
+import com.proofpoint.galaxy.coordinator.auth.AuthFilter;
+import com.proofpoint.galaxy.coordinator.auth.AuthorizedKey;
 import com.proofpoint.galaxy.shared.AgentStatus;
 import com.proofpoint.galaxy.shared.Assignment;
 import com.proofpoint.galaxy.shared.AssignmentRepresentation;
@@ -62,7 +64,7 @@ public class CoordinatorSlotResource
 
     @GET
     @Produces(MediaType.APPLICATION_JSON)
-    public Response getAllSlots(@Context UriInfo uriInfo)
+    public Response getAllSlots(@Context UriInfo uriInfo, @RequestAttribute(AuthFilter.AUTHORIZED_KEY_ATTRIBUTE) AuthorizedKey authorizedKey)
     {
         List<UUID> uuids = Lists.transform(coordinator.getAllSlotStatus(), SlotStatus.uuidGetter());
 

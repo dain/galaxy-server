@@ -69,7 +69,7 @@ public class TestCoordinatorSlotResource
         int prefixSize = max(CoordinatorSlotResource.MIN_PREFIX_SIZE, Strings.shortestUniquePrefix(asList(slot1.getId().toString(), slot2.getId().toString())));
 
         URI requestUri = URI.create("http://localhost/v1/slot");
-        Response response = resource.getAllSlots(MockUriInfo.from(requestUri));
+        Response response = resource.getAllSlots(MockUriInfo.from(requestUri), null);
         assertEquals(response.getStatus(), Response.Status.OK.getStatusCode());
         assertEqualsNoOrder((Iterable<?>) response.getEntity(), ImmutableList.of(SlotStatusRepresentation.from(slot1, prefixSize), SlotStatusRepresentation.from(slot2, prefixSize)));
         assertNull(response.getMetadata().get("Content-Type")); // content type is set by jersey based on @Produces
@@ -86,7 +86,7 @@ public class TestCoordinatorSlotResource
         int prefixSize = max(CoordinatorSlotResource.MIN_PREFIX_SIZE, Strings.shortestUniquePrefix(asList(slot1.getId().toString(), slot2.getId().toString())));
 
         URI requestUri = URI.create("http://localhost/v1/slot?host=foo");
-        Response response = resource.getAllSlots(MockUriInfo.from(requestUri));
+        Response response = resource.getAllSlots(MockUriInfo.from(requestUri), null);
         assertEquals(response.getStatus(), Response.Status.OK.getStatusCode());
         assertEqualsNoOrder((Iterable<?>) response.getEntity(), ImmutableList.of(SlotStatusRepresentation.from(slot1, prefixSize)));
         assertNull(response.getMetadata().get("Content-Type")); // content type is set by jersey based on @Produces
@@ -96,7 +96,7 @@ public class TestCoordinatorSlotResource
     public void testGetAllSlotEmpty()
     {
         URI requestUri = URI.create("http://localhost/v1/slot?state=unknown");
-        Response response = resource.getAllSlots(MockUriInfo.from(requestUri));
+        Response response = resource.getAllSlots(MockUriInfo.from(requestUri), null);
         assertEquals(response.getStatus(), Response.Status.OK.getStatusCode());
         assertEqualsNoOrder((Iterable<?>) response.getEntity(), ImmutableList.of());
         assertNull(response.getMetadata().get("Content-Type")); // content type is set by jersey based on @Produces
