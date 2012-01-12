@@ -176,7 +176,7 @@ public class AgentFilterBuilder
         }
 
         @Override
-        public boolean apply(@Nullable AgentStatus agentStatus)
+        public boolean apply(AgentStatus agentStatus)
         {
             return agentStatus.getState() == state;
         }
