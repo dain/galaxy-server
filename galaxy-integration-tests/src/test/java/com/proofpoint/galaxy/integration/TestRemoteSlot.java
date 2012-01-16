@@ -23,6 +23,7 @@ import com.google.inject.util.Modules;
 import com.ning.http.client.AsyncHttpClient;
 import com.proofpoint.configuration.ConfigurationFactory;
 import com.proofpoint.configuration.ConfigurationModule;
+import com.proofpoint.discovery.client.ServiceDescriptorsRepresentation;
 import com.proofpoint.galaxy.agent.Agent;
 import com.proofpoint.galaxy.agent.AgentMainModule;
 import com.proofpoint.galaxy.agent.DeploymentManagerFactory;
@@ -30,13 +31,18 @@ import com.proofpoint.galaxy.agent.LifecycleManager;
 import com.proofpoint.galaxy.agent.MockDeploymentManagerFactory;
 import com.proofpoint.galaxy.agent.MockLifecycleManager;
 import com.proofpoint.galaxy.agent.Slot;
+import com.proofpoint.galaxy.coordinator.HttpRemoteAgent;
 import com.proofpoint.galaxy.coordinator.HttpRemoteSlot;
 import com.proofpoint.galaxy.coordinator.RemoteSlot;
+import com.proofpoint.galaxy.shared.AgentStatusRepresentation;
 import com.proofpoint.galaxy.shared.Installation;
+import com.proofpoint.galaxy.shared.InstallationRepresentation;
 import com.proofpoint.galaxy.shared.SlotStatus;
+import com.proofpoint.galaxy.shared.SlotStatusRepresentation;
 import com.proofpoint.http.server.testing.TestingHttpServer;
 import com.proofpoint.http.server.testing.TestingHttpServerModule;
 import com.proofpoint.jaxrs.JaxrsModule;
+import com.proofpoint.json.JsonCodec;
 import com.proofpoint.json.JsonModule;
 import com.proofpoint.node.testing.TestingNodeModule;
 import org.testng.annotations.AfterClass;
@@ -63,11 +69,13 @@ public class TestRemoteSlot
 {
     private static final Installation APPLE_INSTALLATION = new Installation(APPLE_ASSIGNMENT,
             URI.create("fake://localhost/apple.tar.gz"),
-            ImmutableMap.of("config", URI.create("fake://localhost/apple.config")));
+            ImmutableMap.of("config", URI.create("fake://localhost/apple.config")),
+            ImmutableMap.of("memory", 512));
 
     private static final Installation BANANA_INSTALLATION = new Installation(BANANA_ASSIGNMENT,
             URI.create("fake://localhost/banana.tar.gz"),
-            ImmutableMap.of("config", URI.create("fake://localhost/banana.config")));
+            ImmutableMap.of("config", URI.create("fake://localhost/banana.config")),
+            ImmutableMap.of("cpu", 1));
 
     private AsyncHttpClient client;
     private TestingHttpServer server;
@@ -75,8 +83,8 @@ public class TestRemoteSlot
     private Agent agent;
 
     private File tempDir;
-    private RemoteSlot remoteSlot;
     private Slot slot;
+    private HttpRemoteAgent remoteAgent;
 
     @BeforeClass
     public void startServer()
@@ -109,6 +117,16 @@ public class TestRemoteSlot
 
         server.start();
         client = new AsyncHttpClient();
+        remoteAgent = new HttpRemoteAgent("test",
+                agent.getAgentId(),
+                "instance.type",
+                server.getBaseUrl(),
+                client,
+                JsonCodec.jsonCodec(InstallationRepresentation.class),
+                JsonCodec.jsonCodec(AgentStatusRepresentation.class),
+                JsonCodec.jsonCodec(SlotStatusRepresentation.class),
+                JsonCodec.jsonCodec(ServiceDescriptorsRepresentation.class));
+        remoteAgent.setStatus(agent.getAgentStatus());
     }
 
     @BeforeMethod
@@ -123,7 +141,6 @@ public class TestRemoteSlot
         assertTrue(agent.getAllSlots().isEmpty());
 
         slot = agent.getSlot(agent.install(APPLE_INSTALLATION).getName());
-        remoteSlot = new HttpRemoteSlot(slot.status(), new AsyncHttpClient());
     }
 
     @AfterClass
@@ -140,13 +157,13 @@ public class TestRemoteSlot
         if (tempDir != null) {
             deleteRecursively(tempDir);
         }
-        remoteSlot = null;
     }
 
     @Test
     public void testGetSlotStatus()
             throws Exception
     {
+        RemoteSlot remoteSlot = new HttpRemoteSlot(slot.status(), client, remoteAgent);
         assertEquals(remoteSlot.status(), slot.status());
     }
 
@@ -158,6 +175,8 @@ public class TestRemoteSlot
         assertEquals(slot.status(), new SlotStatus(slot.status(), STOPPED, APPLE_ASSIGNMENT));
 
         // test
+        remoteAgent.setStatus(agent.getAgentStatus());
+        RemoteSlot remoteSlot = new HttpRemoteSlot(slot.status(), client, remoteAgent);
         SlotStatus actual = remoteSlot.assign(BANANA_INSTALLATION);
 
         // verify
@@ -173,10 +192,12 @@ public class TestRemoteSlot
         assertEquals(slot.assign(APPLE_INSTALLATION).getAssignment(), APPLE_ASSIGNMENT);
 
         // test
+        remoteAgent.setStatus(agent.getAgentStatus());
+        RemoteSlot remoteSlot = new HttpRemoteSlot(slot.status(), client, remoteAgent);
         SlotStatus actual = remoteSlot.terminate();
 
         // verify
-        SlotStatus expected = new SlotStatus(slot.getId(), slot.getName(), slot.getSelf(), slot.status().getLocation(), TERMINATED, null, null);
+        SlotStatus expected = new SlotStatus(slot.getId(), slot.getName(), slot.getSelf(), slot.status().getLocation(), TERMINATED, null, null, ImmutableMap.<String, Integer>of());
         assertEquals(actual, expected);
     }
 
@@ -188,6 +209,8 @@ public class TestRemoteSlot
         assertEquals(slot.assign(APPLE_INSTALLATION).getState(), STOPPED);
 
         // test
+        remoteAgent.setStatus(agent.getAgentStatus());
+        RemoteSlot remoteSlot = new HttpRemoteSlot(slot.status(), client, remoteAgent);
         SlotStatus actual = remoteSlot.start();
 
         // verify
@@ -204,6 +227,8 @@ public class TestRemoteSlot
         assertEquals(slot.start().getState(), RUNNING);
 
         // test
+        remoteAgent.setStatus(agent.getAgentStatus());
+        RemoteSlot remoteSlot = new HttpRemoteSlot(slot.status(), client, remoteAgent);
         SlotStatus actual = remoteSlot.stop();
 
         // verify
@@ -219,6 +244,8 @@ public class TestRemoteSlot
         assertEquals(slot.assign(APPLE_INSTALLATION).getState(), STOPPED);
 
         // test
+        remoteAgent.setStatus(agent.getAgentStatus());
+        RemoteSlot remoteSlot = new HttpRemoteSlot(slot.status(), client, remoteAgent);
         SlotStatus actual = remoteSlot.restart();
 
         // verify

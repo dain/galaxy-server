@@ -4,6 +4,7 @@ import com.google.common.base.Function;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
 import com.ning.http.client.AsyncHttpClient;
 import com.ning.http.client.Response;
@@ -25,6 +26,7 @@ import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response.Status;
 import java.net.URI;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -35,6 +37,8 @@ import static com.google.common.collect.Sets.newHashSet;
 import static com.proofpoint.galaxy.shared.AgentLifecycleState.OFFLINE;
 import static com.proofpoint.galaxy.shared.AgentLifecycleState.ONLINE;
 import static com.proofpoint.galaxy.shared.AgentLifecycleState.PROVISIONING;
+import static com.proofpoint.galaxy.shared.AgentStatusRepresentation.GALAXY_AGENT_VERSION_HEADER;
+import static com.proofpoint.galaxy.shared.SlotLifecycleState.TERMINATED;
 
 public class HttpRemoteAgent implements RemoteAgent
 {
@@ -44,13 +48,14 @@ public class HttpRemoteAgent implements RemoteAgent
     private final JsonCodec<AgentStatusRepresentation> agentStatusCodec;
     private final JsonCodec<SlotStatusRepresentation> slotStatusCodec;
     private final JsonCodec<ServiceDescriptorsRepresentation> serviceDescriptorsCodec;
-    private final ConcurrentMap<UUID, HttpRemoteSlot> slots;
 
+    private final ConcurrentMap<UUID, SlotStatus> slots;
     private final String environment;
     private final String agentId;
     private final AsyncHttpClient httpClient;
     private AgentLifecycleState state;
     private URI uri;
+    private Map<String,Integer> resources = ImmutableMap.of();
     private String location;
     private String instanceType;
     private final AtomicBoolean serviceInventoryUp = new AtomicBoolean(true);
@@ -75,20 +80,14 @@ public class HttpRemoteAgent implements RemoteAgent
         this.slotStatusCodec = slotStatusCodec;
         this.serviceDescriptorsCodec = serviceDescriptorsCodec;
 
-        slots = new ConcurrentHashMap<UUID, HttpRemoteSlot>();
+        slots = new ConcurrentHashMap<UUID, SlotStatus>();
         state = OFFLINE;
     }
 
     @Override
     public AgentStatus status()
     {
-        return new AgentStatus(agentId, state, uri, location, instanceType, ImmutableList.copyOf(Iterables.transform(slots.values(), new Function<HttpRemoteSlot, SlotStatus>()
-        {
-            public SlotStatus apply(HttpRemoteSlot slot)
-            {
-                return slot.status();
-            }
-        })));
+        return new AgentStatus(agentId, state, uri, location, instanceType, ImmutableList.copyOf(slots.values()), resources);
     }
 
     @Override
@@ -106,7 +105,14 @@ public class HttpRemoteAgent implements RemoteAgent
     @Override
     public List<? extends RemoteSlot> getSlots()
     {
-        return ImmutableList.copyOf(slots.values());
+        return ImmutableList.copyOf(Iterables.transform(slots.values(), new Function<SlotStatus, HttpRemoteSlot>()
+        {
+            @Override
+            public HttpRemoteSlot apply(SlotStatus slotStatus)
+            {
+                return new HttpRemoteSlot(slotStatus, httpClient, HttpRemoteAgent.this);
+            }
+        }));
     }
 
     @Override
@@ -162,8 +168,8 @@ public class HttpRemoteAgent implements RemoteAgent
         // error talking to agent -- mark agent offline
         if (state != PROVISIONING) {
             state = OFFLINE;
-            for (HttpRemoteSlot remoteSlot : slots.values()) {
-                remoteSlot.updateStatus(remoteSlot.status().updateState(SlotLifecycleState.UNKNOWN));
+            for (SlotStatus slotStatus : slots.values()) {
+                slots.put(slotStatus.getId(), new SlotStatus(slotStatus, SlotLifecycleState.UNKNOWN, slotStatus.getAssignment()));
             }
         }
     }
@@ -173,14 +179,8 @@ public class HttpRemoteAgent implements RemoteAgent
     {
         Set<UUID> updatedSlots = newHashSet();
         for (SlotStatus slotStatus : status.getSlotStatuses()) {
-            HttpRemoteSlot remoteSlot = slots.get(slotStatus.getId());
-            if (remoteSlot != null) {
-                remoteSlot.updateStatus(slotStatus);
-            }
-            else {
-                slots.put(slotStatus.getId(), new HttpRemoteSlot(slotStatus, httpClient));
-            }
             updatedSlots.add(slotStatus.getId());
+            slots.put(slotStatus.getId(), slotStatus);
         }
 
         // remove all slots that were not updated
@@ -188,7 +188,22 @@ public class HttpRemoteAgent implements RemoteAgent
 
         state = status.getState();
         uri = status.getUri();
+        if (status.getResources() != null) {
+            resources = ImmutableMap.copyOf(status.getResources());
+        }
+        else {
+            resources = ImmutableMap.of();
+        }
         location = status.getLocation();
+    }
+
+    public void setSlotStatus(SlotStatus slotStatus)
+    {
+        if (slotStatus.getState() != TERMINATED) {
+            slots.put(slotStatus.getId(), slotStatus);
+        } else {
+            slots.remove(slotStatus.getId());
+        }
     }
 
     @Override
@@ -199,6 +214,7 @@ public class HttpRemoteAgent implements RemoteAgent
         try {
             Response response = httpClient.preparePost(uri + "/v1/agent/slot")
                     .setHeader(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON)
+                    .setHeader(GALAXY_AGENT_VERSION_HEADER, status().getVersion())
                     .setBody(installationCodec.toJson(InstallationRepresentation.from(installation)))
                     .execute()
                     .get();
@@ -210,26 +226,13 @@ public class HttpRemoteAgent implements RemoteAgent
             SlotStatusRepresentation slotStatusRepresentation = slotStatusCodec.fromJson(responseJson);
 
             SlotStatus slotStatus = slotStatusRepresentation.toSlotStatus();
-            slots.put(slotStatus.getId(), new HttpRemoteSlot(slotStatus, httpClient));
+            slots.put(slotStatus.getId(), slotStatus);
 
             return slotStatus;
         }
         catch (Exception e) {
             throw Throwables.propagate(e);
         }
-    }
-
-    @Override
-    public SlotStatus terminateSlot(UUID slotId)
-    {
-        Preconditions.checkNotNull(slotId, "slotId is null");
-
-        HttpRemoteSlot slot = slots.get(slotId);
-        SlotStatus status = slot.terminate();
-        if (status.getState() == SlotLifecycleState.TERMINATED) {
-            slots.remove(slotId);
-        }
-        return status;
     }
 }
 

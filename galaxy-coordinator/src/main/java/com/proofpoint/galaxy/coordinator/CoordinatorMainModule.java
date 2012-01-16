@@ -17,7 +17,6 @@ import com.google.inject.Binder;
 import com.google.inject.Module;
 import com.google.inject.Scopes;
 import com.google.inject.multibindings.Multibinder;
-import com.proofpoint.configuration.ConfigurationModule;
 import com.proofpoint.discovery.client.ServiceDescriptor;
 import com.proofpoint.discovery.client.ServiceDescriptorsRepresentation;
 import com.proofpoint.galaxy.coordinator.auth.AuthConfig;
@@ -25,6 +24,7 @@ import com.proofpoint.galaxy.coordinator.auth.AuthFilter;
 import com.proofpoint.galaxy.coordinator.auth.SignatureVerifier;
 import com.proofpoint.galaxy.shared.AgentStatusRepresentation;
 import com.proofpoint.galaxy.shared.ConfigRepository;
+import com.proofpoint.galaxy.shared.ExpectedSlotStatus;
 import com.proofpoint.galaxy.shared.InstallationRepresentation;
 import com.proofpoint.galaxy.shared.SlotStatusRepresentation;
 import com.proofpoint.http.server.TheServlet;
@@ -53,8 +53,6 @@ public class CoordinatorMainModule
         binder.bind(BinaryRepository.class).to(MavenBinaryRepository.class).in(Scopes.SINGLETON);
         binder.bind(BinaryUrlResolver.class).in(Scopes.SINGLETON);
         binder.bind(ConfigRepository.class).to(SimpleConfigRepository.class).in(Scopes.SINGLETON);
-
-        binder.bind(LocalConfigRepository.class).in(Scopes.SINGLETON);
 
         binder.bind(BinaryResource.class).in(Scopes.SINGLETON);
 

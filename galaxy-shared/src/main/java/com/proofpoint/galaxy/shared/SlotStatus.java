@@ -14,10 +14,13 @@
 package com.proofpoint.galaxy.shared;
 
 import com.google.common.base.Function;
+import com.google.common.base.Joiner;
 import com.google.common.base.Preconditions;
+import com.google.common.collect.ImmutableMap;
 
 import javax.annotation.concurrent.Immutable;
 import java.net.URI;
+import java.util.Map;
 import java.util.UUID;
 
 import static com.proofpoint.galaxy.shared.SlotLifecycleState.TERMINATED;
@@ -32,11 +35,14 @@ public class SlotStatus
     private final String location;
     private final Assignment assignment;
     private final SlotLifecycleState state;
+    private final String version;
     private final String statusMessage;
 
     private final String installPath;
 
-    public SlotStatus(UUID id, String name, URI self, String location, SlotLifecycleState state, Assignment assignment, String installPath)
+    private final Map<String, Integer> resources;
+
+    public SlotStatus(UUID id, String name, URI self, String location, SlotLifecycleState state, Assignment assignment, String installPath, Map<String, Integer> resources)
     {
         Preconditions.checkNotNull(id, "id is null");
         Preconditions.checkNotNull(name, "name is null");
@@ -45,6 +51,7 @@ public class SlotStatus
         if (state != TERMINATED && state != UNKNOWN) {
             Preconditions.checkNotNull(assignment, "assignment is null");
         }
+        Preconditions.checkNotNull(resources, "resources is null");
 
         this.id = id;
         this.name = name;
@@ -52,8 +59,10 @@ public class SlotStatus
         this.location = location;
         this.assignment = assignment;
         this.state = state;
+        this.version = createVersion(id, state, assignment);
         this.installPath = installPath;
         this.statusMessage = null;
+        this.resources = ImmutableMap.copyOf(resources);
     }
 
     public SlotStatus(SlotStatus status, SlotLifecycleState state, Assignment assignment)
@@ -68,8 +77,10 @@ public class SlotStatus
         this.location = status.location;
         this.assignment = assignment;
         this.state = state;
+        this.version = createVersion(id, state, assignment);
         this.installPath = status.getInstallPath();
         this.statusMessage = null;
+        this.resources = status.resources;
     }
 
     private SlotStatus(SlotStatus status, SlotLifecycleState state, String statusMessage)
@@ -84,12 +95,15 @@ public class SlotStatus
         if (state != TERMINATED) {
             this.assignment = status.assignment;
             this.installPath = status.installPath;
+            this.resources = status.resources;
         }
         else {
             this.assignment = null;
             this.installPath = null;
+            this.resources = ImmutableMap.of();
         }
         this.state = state;
+        this.version = createVersion(id, state, assignment);
         this.statusMessage = statusMessage;
     }
 
@@ -123,15 +137,23 @@ public class SlotStatus
         return state;
     }
 
-    public SlotStatus updateState(SlotLifecycleState state) {
+    public String getVersion()
+    {
+        return version;
+    }
+
+    public SlotStatus updateState(SlotLifecycleState state)
+    {
         return updateState(state, null);
     }
 
-    public SlotStatus updateState(SlotLifecycleState state, String statusMessage) {
+    public SlotStatus updateState(SlotLifecycleState state, String statusMessage)
+    {
         return new SlotStatus(this, state, statusMessage);
     }
 
-    public SlotStatus clearStatusMessage() {
+    public SlotStatus clearStatusMessage()
+    {
         return new SlotStatus(this, state, (String) null);
     }
 
@@ -143,6 +165,11 @@ public class SlotStatus
     public String getInstallPath()
     {
         return installPath;
+    }
+
+    public Map<String, Integer> getResources()
+    {
+        return resources;
     }
 
     @Override
@@ -178,6 +205,12 @@ public class SlotStatus
         if (state != that.state) {
             return false;
         }
+        if (!version.equals(that.version)) {
+            return false;
+        }
+        if (!resources.equals(that.resources)) {
+            return false;
+        }
 
         return true;
     }
@@ -191,7 +224,9 @@ public class SlotStatus
         result = 31 * result + location.hashCode();
         result = 31 * result + (assignment != null ? assignment.hashCode() : 0);
         result = 31 * result + state.hashCode();
+        result = 31 * result + version.hashCode();
         result = 31 * result + (installPath != null ? installPath.hashCode() : 0);
+        result = 31 * result + resources.hashCode();
         return result;
     }
 
@@ -205,7 +240,9 @@ public class SlotStatus
                 ", location=" + location +
                 ", assignment=" + assignment +
                 ", state=" + state +
+                ", version=" + version +
                 ", installPath='" + installPath + '\'' +
+                ", resources='" + resources + '\'' +
                 '}';
     }
 
@@ -220,4 +257,9 @@ public class SlotStatus
         };
     }
 
+    public static String createVersion(UUID id, SlotLifecycleState state, Assignment assignment)
+    {
+        String data = Joiner.on("||").useForNull("--NULL--").join(id, state, assignment);
+        return DigestUtils.md5Hex(data);
+    }
 }

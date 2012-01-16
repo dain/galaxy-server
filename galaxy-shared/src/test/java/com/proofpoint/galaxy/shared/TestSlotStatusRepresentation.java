@@ -1,6 +1,7 @@
 package com.proofpoint.galaxy.shared;
 
 import com.google.common.base.Charsets;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.io.Resources;
 import com.proofpoint.json.JsonCodec;
 import org.testng.annotations.Test;
@@ -25,8 +26,10 @@ public class TestSlotStatusRepresentation
             AssignmentHelper.APPLE_ASSIGNMENT.getBinary().toString(),
             AssignmentHelper.APPLE_ASSIGNMENT.getConfig().toString(),
             STOPPED.toString(),
+            "abc",
             null,
             "/apple",
+            ImmutableMap.of("memory", 512),
             "Xfood.fruit:apple:1.0",
             "@Xapple:1.0",
             UNKNOWN.toString());

@@ -13,6 +13,7 @@ import com.google.common.collect.Iterables;
 import com.google.common.collect.MapMaker;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
+import com.google.common.io.InputSupplier;
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import com.google.inject.Inject;
 import com.proofpoint.discovery.client.ServiceDescriptor;
@@ -20,15 +21,19 @@ import com.proofpoint.galaxy.shared.AgentLifecycleState;
 import com.proofpoint.galaxy.shared.AgentStatus;
 import com.proofpoint.galaxy.shared.Assignment;
 import com.proofpoint.galaxy.shared.ConfigRepository;
+import com.proofpoint.galaxy.shared.ExpectedSlotStatus;
 import com.proofpoint.galaxy.shared.Installation;
 import com.proofpoint.galaxy.shared.SlotLifecycleState;
 import com.proofpoint.galaxy.shared.SlotStatus;
+import com.proofpoint.galaxy.shared.SlotStatusWithExpectedState;
 import com.proofpoint.galaxy.shared.UpgradeVersions;
 import com.proofpoint.log.Logger;
 import com.proofpoint.node.NodeInfo;
 import com.proofpoint.units.Duration;
 
 import javax.annotation.PostConstruct;
+import java.io.IOException;
+import java.io.InputStream;
 import java.net.URI;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -36,6 +41,9 @@ import java.util.EnumSet;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
+import java.util.Properties;
+import java.util.TreeMap;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.Executors;
@@ -62,7 +70,6 @@ public class Coordinator
     private final String environment;
     private final BinaryUrlResolver binaryUrlResolver;
     private final ConfigRepository configRepository;
-    private final LocalConfigRepository localConfigRepository;
     private final ScheduledExecutorService timerService;
     private final Duration statusExpiration;
     private final Provisioner provisioner;
@@ -76,7 +83,6 @@ public class Coordinator
             RemoteAgentFactory remoteAgentFactory,
             BinaryUrlResolver binaryUrlResolver,
             ConfigRepository configRepository,
-            LocalConfigRepository localConfigRepository,
             Provisioner provisioner,
             StateManager stateManager, ServiceInventory serviceInventory)
     {
@@ -84,7 +90,6 @@ public class Coordinator
                 remoteAgentFactory,
                 binaryUrlResolver,
                 configRepository,
-                localConfigRepository,
                 provisioner,
                 stateManager,
                 serviceInventory,
@@ -96,7 +101,6 @@ public class Coordinator
             RemoteAgentFactory remoteAgentFactory,
             BinaryUrlResolver binaryUrlResolver,
             ConfigRepository configRepository,
-            LocalConfigRepository localConfigRepository,
             Provisioner provisioner,
             StateManager stateManager,
             ServiceInventory serviceInventory,
@@ -106,7 +110,6 @@ public class Coordinator
         Preconditions.checkNotNull(remoteAgentFactory, "remoteAgentFactory is null");
         Preconditions.checkNotNull(configRepository, "repository is null");
         Preconditions.checkNotNull(binaryUrlResolver, "binaryUrlResolver is null");
-        Preconditions.checkNotNull(localConfigRepository, "localConfigRepository is null");
         Preconditions.checkNotNull(provisioner, "provisioner is null");
         Preconditions.checkNotNull(stateManager, "stateManager is null");
         Preconditions.checkNotNull(serviceInventory, "serviceInventory is null");
@@ -116,7 +119,6 @@ public class Coordinator
         this.remoteAgentFactory = remoteAgentFactory;
         this.binaryUrlResolver = binaryUrlResolver;
         this.configRepository = configRepository;
-        this.localConfigRepository = localConfigRepository;
         this.provisioner = provisioner;
         this.stateManager = stateManager;
         this.serviceInventory = serviceInventory;
@@ -130,7 +132,8 @@ public class Coordinator
     }
 
     @PostConstruct
-    public void start() {
+    public void start()
+    {
         timerService.scheduleWithFixedDelay(new Runnable()
         {
             @Override
@@ -166,6 +169,15 @@ public class Coordinator
         return builder.build();
     }
 
+    public List<AgentStatus> getAgents(Predicate<AgentStatus> agentFilter)
+    {
+        ImmutableList.Builder<AgentStatus> builder = ImmutableList.builder();
+        for (RemoteAgent remoteAgent : filter(this.agents.values(), filterAgentsBy(agentFilter))) {
+            builder.add(remoteAgent.status());
+        }
+        return builder.build();
+    }
+
     public AgentStatus getAgentStatus(String agentId)
     {
         RemoteAgent agent = agents.get(agentId);
@@ -179,7 +191,8 @@ public class Coordinator
     public void updateAllAgents()
     {
         for (Instance instance : this.provisioner.listAgents()) {
-            RemoteAgent existing = agents.putIfAbsent(instance.getInstanceId(), remoteAgentFactory.createRemoteAgent(instance.getInstanceId(), instance.getInstanceType(), instance.getUri()));
+            RemoteAgent remoteAgent = remoteAgentFactory.createRemoteAgent(instance.getInstanceId(), instance.getInstanceType(), instance.getUri());
+            RemoteAgent existing = agents.putIfAbsent(instance.getInstanceId(), remoteAgent);
             if (existing != null) {
                 existing.setUri(instance.getUri());
             }
@@ -219,7 +232,8 @@ public class Coordinator
                     null,
                     instance.getLocation(),
                     instance.getInstanceType(),
-                    ImmutableList.<SlotStatus>of());
+                    ImmutableList.<SlotStatus>of(),
+                    ImmutableMap.<String, Integer>of());
 
             RemoteAgent remoteAgent = remoteAgentFactory.createRemoteAgent(instanceId, instance.getInstanceType(), null);
             remoteAgent.setStatus(agentStatus);
@@ -236,28 +250,26 @@ public class Coordinator
         return agents.remove(agentId) != null;
     }
 
-    public boolean terminateAgent(String agentId)
+    public AgentStatus terminateAgent(String agentId)
     {
         RemoteAgent agent = agents.remove(agentId);
         if (agent == null) {
-            return false;
+            return null;
         }
         if (!agent.getSlots().isEmpty()) {
             agents.putIfAbsent(agentId, agent);
             throw new IllegalStateException("Cannot terminate agent that has slots: " + agentId);
         }
         provisioner.terminateAgents(ImmutableList.of(agentId));
-        return true;
+        return agent.status().updateState(AgentLifecycleState.TERMINATED);
     }
 
     public List<SlotStatus> install(Predicate<AgentStatus> filter, int limit, Assignment assignment)
     {
-        Map<String,URI> configMap = localConfigRepository.getConfigMap(environment, assignment.getConfig());
-        if (configMap == null) {
-            configMap = configRepository.getConfigMap(environment, assignment.getConfig());
-        }
+        Map<String, URI> configMap = configRepository.getConfigMap(environment, assignment.getConfig());
+        Map<String, Integer> resources = readResources(assignment);
 
-        Installation installation = new Installation(assignment, binaryUrlResolver.resolve(assignment.getBinary()), configMap);
+        Installation installation = new Installation(assignment, binaryUrlResolver.resolve(assignment.getBinary()), configMap, resources);
 
         List<SlotStatus> slots = newArrayList();
         List<RemoteAgent> agents = newArrayList(filter(this.agents.values(), Predicates.and(filterAgentsBy(filter), filterAgentsWithAssignment(assignment))));
@@ -269,15 +281,69 @@ public class Coordinator
             if (slots.size() >= limit) {
                 break;
             }
-            if (agent.status().getState() == ONLINE) {
-                SlotStatus slotStatus = agent.install(installation);
-                stateManager.setExpectedState(new ExpectedSlotStatus(slotStatus.getId(), STOPPED, installation.getAssignment()));
-                slots.add(slotStatus);
+
+            // verify agent state
+            AgentStatus status = agent.status();
+            if (status.getState() != ONLINE) {
+                continue;
             }
+
+            // verify that required resources are available
+            Map<String, Integer> availableResources = getAvailableResources(status);
+            if (!resourcesAreAvailable(availableResources, installation.getResources())) {
+                continue;
+            }
+
+            // install
+            SlotStatus slotStatus = agent.install(installation);
+            stateManager.setExpectedState(new ExpectedSlotStatus(slotStatus.getId(), STOPPED, installation.getAssignment()));
+            slots.add(slotStatus);
         }
         return ImmutableList.copyOf(slots);
     }
 
+    private boolean resourcesAreAvailable(Map<String, Integer> availableResources, Map<String, Integer> requiredResources)
+    {
+        for (Entry<String, Integer> entry : requiredResources.entrySet()) {
+            int available = Objects.firstNonNull(availableResources.get(entry.getKey()), 0);
+            if (available < entry.getValue()) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    public static Map<String, Integer> getAvailableResources(AgentStatus agentStatus)
+    {
+        Map<String,Integer> availableResources = new TreeMap<String, Integer>(agentStatus.getResources());
+        for (SlotStatus slotStatus : agentStatus.getSlotStatuses()) {
+            for (Entry<String, Integer> entry : slotStatus.getResources().entrySet()) {
+                int value = Objects.firstNonNull(availableResources.get(entry.getKey()), 0);
+                availableResources.put(entry.getKey(), value - entry.getValue());
+            }
+        }
+        return availableResources;
+    }
+
+
+    private Map<String, Integer> readResources(Assignment assignment)
+    {
+        ImmutableMap.Builder<String, Integer> builder = ImmutableMap.builder();
+
+        InputSupplier<? extends InputStream> resourcesFile = configRepository.getConfigFile(environment, assignment.getConfig(), "galaxy-resources.properties");
+        if (resourcesFile != null) {
+            try {
+                Properties resources = new Properties();
+                resources.load(resourcesFile.getInput());
+                for (Entry<Object, Object> entry : resources.entrySet()) {
+                    builder.put((String) entry.getKey(), Integer.valueOf((String)entry.getValue()));
+                }
+            }
+            catch (IOException ignored) {
+            }
+        }
+        return builder.build();
+    }
 
     public List<SlotStatus> upgrade(Predicate<SlotStatus> filter, UpgradeVersions upgradeVersions)
     {
@@ -304,12 +370,9 @@ public class Coordinator
         }
         Assignment assignment = newAssignments.iterator().next();
 
-        Map<String,URI> configMap = localConfigRepository.getConfigMap(environment, assignment.getConfig());
-        if (configMap == null) {
-            configMap = configRepository.getConfigMap(environment, assignment.getConfig());
-        }
+        Map<String, URI> configMap = configRepository.getConfigMap(environment, assignment.getConfig());
 
-        final Installation installation = new Installation(assignment, binaryUrlResolver.resolve(assignment.getBinary()), configMap);
+        final Installation installation = new Installation(assignment, binaryUrlResolver.resolve(assignment.getBinary()), configMap, ImmutableMap.<String, Integer>of());
 
         return ImmutableList.copyOf(transform(slotsToUpgrade, new Function<RemoteSlot, SlotStatus>()
         {
@@ -331,9 +394,9 @@ public class Coordinator
         for (RemoteAgent agent : agents.values()) {
             for (RemoteSlot slot : agent.getSlots()) {
                 if (filter.apply(slot.status())) {
-                    SlotStatus slotStatus = agent.terminateSlot(slot.getId());
+                    SlotStatus slotStatus = slot.terminate();
                     if (slotStatus.getState() == TERMINATED) {
-                        stateManager.setExpectedState(new ExpectedSlotStatus(slotStatus.getId(),TERMINATED, null));
+                        stateManager.setExpectedState(new ExpectedSlotStatus(slotStatus.getId(), TERMINATED, null));
                     }
                     builder.add(slotStatus);
                 }
@@ -400,15 +463,15 @@ public class Coordinator
 
     public List<SlotStatus> getAllSlotsStatus(Predicate<SlotStatus> slotFilter)
     {
-        ImmutableMap<UUID,ExpectedSlotStatus> expectedStates = Maps.uniqueIndex(stateManager.getAllExpectedStates(), ExpectedSlotStatus.uuidGetter());
-        ImmutableMap<UUID,SlotStatus> actualStates = Maps.uniqueIndex(transform(getAllSlots(), getSlotStatus()), SlotStatus.uuidGetter());
+        ImmutableMap<UUID, ExpectedSlotStatus> expectedStates = Maps.uniqueIndex(stateManager.getAllExpectedStates(), ExpectedSlotStatus.uuidGetter());
+        ImmutableMap<UUID, SlotStatus> actualStates = Maps.uniqueIndex(transform(getAllSlots(), getSlotStatus()), SlotStatus.uuidGetter());
 
         ArrayList<SlotStatus> stats = newArrayList();
         for (UUID uuid : Sets.union(actualStates.keySet(), expectedStates.keySet())) {
             SlotStatus actualState = actualStates.get(uuid);
             ExpectedSlotStatus expectedState = expectedStates.get(uuid);
             if (actualState == null) {
-                actualState = new SlotStatus(uuid, "unknown", null, "unknown", UNKNOWN, expectedState.getAssignment(), null);
+                actualState = new SlotStatus(uuid, "unknown", null, "unknown", UNKNOWN, expectedState.getAssignment(), null, ImmutableMap.<String, Integer>of());
             }
             if (slotFilter.apply(actualState)) {
                 stats.add(actualState);
@@ -417,21 +480,23 @@ public class Coordinator
         return ImmutableList.copyOf(stats);
     }
 
-    public Iterable<SlotStatusWithExpectedState> getAllSlotStatusWithExpectedState(Predicate<SlotStatus> slotFilter)
+    public List<SlotStatusWithExpectedState> getAllSlotStatusWithExpectedState(Predicate<SlotStatus> slotFilter)
     {
-        ImmutableMap<UUID,ExpectedSlotStatus> expectedStates = Maps.uniqueIndex(stateManager.getAllExpectedStates(), ExpectedSlotStatus.uuidGetter());
-        ImmutableMap<UUID,SlotStatus> actualStates = Maps.uniqueIndex(transform(getAllSlots(), getSlotStatus()), SlotStatus.uuidGetter());
+        ImmutableMap<UUID, ExpectedSlotStatus> expectedStates = Maps.uniqueIndex(stateManager.getAllExpectedStates(), ExpectedSlotStatus.uuidGetter());
+        ImmutableMap<UUID, SlotStatus> actualStates = Maps.uniqueIndex(transform(getAllSlots(), getSlotStatus()), SlotStatus.uuidGetter());
 
         ArrayList<SlotStatusWithExpectedState> stats = newArrayList();
         for (UUID uuid : Sets.union(actualStates.keySet(), expectedStates.keySet())) {
             SlotStatus actualState = actualStates.get(uuid);
             ExpectedSlotStatus expectedState = expectedStates.get(uuid);
             if (actualState == null) {
-                actualState = new SlotStatus(uuid, "unknown", null, "unknown", UNKNOWN, expectedState.getAssignment(), null);
+                actualState = new SlotStatus(uuid, "unknown", null, "unknown", UNKNOWN, expectedState.getAssignment(), null, ImmutableMap.<String, Integer>of());
                 actualState = actualState.updateState(UNKNOWN, "Slot is missing; Expected slot to be " + expectedState.getStatus());
-            } else if (expectedState == null) {
+            }
+            else if (expectedState == null) {
                 actualState = actualState.updateState(actualState.getState(), "Unexpected slot");
-            } else {
+            }
+            else {
                 List<String> messages = newArrayList();
                 if (!Objects.equal(actualState.getState(), expectedState.getStatus())) {
                     messages.add("Expected state to be " + expectedState.getStatus());
@@ -440,7 +505,8 @@ public class Coordinator
                     Assignment assignment = expectedState.getAssignment();
                     if (assignment != null) {
                         messages.add("Expected assignment to be " + assignment.getBinary() + " " + assignment.getConfig());
-                    } else {
+                    }
+                    else {
                         messages.add("Expected no assignment");
                     }
                 }

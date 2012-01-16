@@ -16,7 +16,8 @@ import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.proofpoint.galaxy.shared.BinarySpec;
-import com.proofpoint.http.server.HttpServerInfo;
+import com.proofpoint.galaxy.shared.ConfigRepository;
+import com.proofpoint.galaxy.shared.ConfigSpec;
 import com.proofpoint.log.Logger;
 import com.proofpoint.node.NodeInfo;
 import org.apache.commons.codec.binary.Base64;
@@ -39,7 +40,6 @@ public class AwsProvisioner implements Provisioner
 
     private final AmazonEC2 ec2Client;
     private final String environment;
-    private final URI coordinatorUri;
     private final String galaxyVersion;
     private final String awsAgentAmi;
     private final String awsAgentKeypair;
@@ -48,12 +48,13 @@ public class AwsProvisioner implements Provisioner
     private final int awsAgentDefaultPort;
     private final BinaryUrlResolver urlResolver;
     private final Set<String> invalidInstances = Collections.newSetFromMap(new ConcurrentHashMap<String, Boolean>());
+    private final ConfigRepository configRepository;
 
     @Inject
     public AwsProvisioner(AmazonEC2 ec2Client,
             NodeInfo nodeInfo,
-            HttpServerInfo httpServerInfo,
             BinaryUrlResolver urlResolver,
+            ConfigRepository configRepository,
             CoordinatorConfig coordinatorConfig,
             AwsProvisionerConfig awsProvisionerConfig)
     {
@@ -61,9 +62,6 @@ public class AwsProvisioner implements Provisioner
 
         checkNotNull(nodeInfo, "nodeInfo is null");
         this.environment = nodeInfo.getEnvironment();
-
-        checkNotNull(httpServerInfo, "httpServerInfo is null");
-        coordinatorUri = httpServerInfo.getHttpUri();
 
         checkNotNull(coordinatorConfig, "coordinatorConfig is null");
         galaxyVersion = coordinatorConfig.getGalaxyVersion();
@@ -76,6 +74,8 @@ public class AwsProvisioner implements Provisioner
         awsAgentDefaultPort = awsProvisionerConfig.getAwsAgentDefaultPort();
 
         this.urlResolver = checkNotNull(urlResolver, "urlResolver is null");
+        this.configRepository = checkNotNull(configRepository, "configRepository is null");
+
     }
 
     @Override
@@ -93,9 +93,6 @@ public class AwsProvisioner implements Provisioner
                 }
                 Map<String, String> tags = toMap(instance.getTags());
                 if ("agent".equals(tags.get("galaxy:role")) && environment.equals(tags.get("galaxy:environment"))) {
-                    String zone = instance.getPlacement().getAvailabilityZone();
-                    String region = zone.substring(0, zone.length() - 1);
-
                     String portTag = tags.get("galaxy:port");
                     if (portTag == null) {
                         if (invalidInstances.add(instance.getInstanceId())) {
@@ -119,7 +116,7 @@ public class AwsProvisioner implements Provisioner
                     if (instance.getPrivateIpAddress() != null) {
                         uri = URI.create(format("http://%s:%s", instance.getPrivateIpAddress(), port));
                     }
-                    instances.add(new Instance(region, zone, instance.getInstanceId(), instance.getInstanceType(), uri));
+                    instances.add(toInstance(instance, uri));
                     invalidInstances.remove(instance.getInstanceId());
                 }
             }
@@ -148,7 +145,7 @@ public class AwsProvisioner implements Provisioner
                 .withSecurityGroups(awsAgentSecurityGroup)
                 .withInstanceType(instanceType)
                 .withPlacement(new Placement(availabilityZone))
-                .withUserData(getUserData())
+                .withUserData(getUserData(instanceType))
                 .withBlockDeviceMappings(blockDeviceMappings)
                 .withMinCount(agentCount)
                 .withMaxCount(agentCount);
@@ -161,9 +158,7 @@ public class AwsProvisioner implements Provisioner
         List<String> instanceIds = newArrayList();
 
         for (com.amazonaws.services.ec2.model.Instance instance : result.getReservation().getInstances()) {
-            String zone = instance.getPlacement().getAvailabilityZone();
-            String region = zone.substring(0, zone.length() - 1);
-            instances.add(new Instance(region, zone, instance.getInstanceId(), instance.getInstanceType()));
+            instances.add(toInstance(instance, null));
             instanceIds.add(instance.getInstanceId());
         }
 
@@ -199,13 +194,13 @@ public class AwsProvisioner implements Provisioner
         log.error(lastException, "failed to create tags for instances: %s", instanceIds);
     }
 
-    private String getUserData()
+    private String getUserData(String instanceType)
     {
-        return encodeBase64(getRawUserData());
+        return encodeBase64(getRawUserData(instanceType));
     }
 
     @VisibleForTesting
-    String getRawUserData()
+    String getRawUserData(String instanceType)
     {
         String boundary = "===============884613ba9e744d0c851955611107553e==";
         String boundaryLine = "--" + boundary;
@@ -218,29 +213,57 @@ public class AwsProvisioner implements Provisioner
         URI partHandler = urlResolver.resolve(new BinarySpec("com.proofpoint.galaxy", "galaxy-ec2", galaxyVersion, "py", "part-handler"));
         URI installScript = urlResolver.resolve(new BinarySpec("com.proofpoint.galaxy", "galaxy-ec2", galaxyVersion, "rb", "install"));
 
-        String[] lines = {
+        ImmutableList.Builder<String> lines = ImmutableList.builder();
+        lines.add(
                 "Content-Type: multipart/mixed; boundary=\"" + boundary + "\"", mimeVersion,
-                "", boundaryLine,
+                "",
+                boundaryLine,
 
                 contentTypeUrl, mimeVersion, encoding, format(attachmentFormat, "galaxy-part-handler.py"), "",
                 partHandler.toString(),
-                "", boundaryLine,
+                "",
+                boundaryLine,
 
                 contentTypeText, mimeVersion, encoding, format(attachmentFormat, "installer.properties"), "",
                 format("galaxy.version=%s", galaxyVersion),
                 format("environment=%s", environment),
                 "artifacts=galaxy-agent",
-                "", boundaryLine,
+                "",
+                boundaryLine,
 
                 contentTypeText, mimeVersion, encoding, format(attachmentFormat, "galaxy-agent.properties"), "",
                 format("http-server.http.port=%s", awsAgentDefaultPort),
-                "", boundaryLine,
+                "",
+                boundaryLine,
 
                 contentTypeUrl, mimeVersion, encoding, format(attachmentFormat, "galaxy-install.rb"), "",
                 installScript.toString(),
-                "", boundaryLine,
-        };
-        return Joiner.on('\n').join(lines);
+                "",
+                boundaryLine
+        );
+
+        URI resourcesFile = configRepository.getConfigResource(environment, new ConfigSpec("agent", galaxyVersion, instanceType), "etc/resources.properties");
+        if (resourcesFile != null) {
+            lines.add(
+                    contentTypeUrl, mimeVersion, encoding, format(attachmentFormat, "galaxy-agent-resources.properties"), "",
+                    resourcesFile.toString(),
+                    "",
+                    boundaryLine
+            );
+        }
+        return Joiner.on('\n').join(lines.build());
+    }
+
+    private Instance toInstance(com.amazonaws.services.ec2.model.Instance instance, URI uri)
+    {
+        return new Instance(instance.getInstanceId(), instance.getInstanceType(), getLocation(instance), uri);
+    }
+
+    private static String getLocation(com.amazonaws.services.ec2.model.Instance instance)
+    {
+        String zone = instance.getPlacement().getAvailabilityZone();
+        String region = zone.substring(0, zone.length() - 1);
+        return Joiner.on('/').join("ec2", region, zone, instance.getInstanceId(), "agent");
     }
 
     private static String encodeBase64(String s)

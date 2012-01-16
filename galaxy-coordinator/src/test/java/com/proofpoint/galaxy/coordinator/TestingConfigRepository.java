@@ -9,7 +9,6 @@ import java.io.IOException;
 import java.util.Map;
 
 import static com.google.common.base.Charsets.UTF_8;
-import static com.proofpoint.galaxy.shared.FileUtils.copyRecursively;
 import static com.proofpoint.galaxy.shared.FileUtils.createTempDir;
 import static com.proofpoint.galaxy.shared.FileUtils.deleteRecursively;
 
@@ -71,6 +70,20 @@ public class TestingConfigRepository extends SimpleConfigRepository
 
         // jvm.config
         new File(dir, "jvm.config").createNewFile();
+
+        // config.properties
+        if ("apple".equals(name)) {
+            Files.write(
+                    "memory=512\n" +
+                            "cpu=1",
+                    new File(dir, "galaxy-resources.properties"), UTF_8);
+        } else {
+            Files.write(
+                    "memory=1024\n" +
+                            "cpu=2",
+                    new File(dir, "galaxy-resources.properties"), UTF_8);
+        }
+
 
         // config-map.json
         Map<String, String> configMap = ImmutableMap.<String, String>builder()

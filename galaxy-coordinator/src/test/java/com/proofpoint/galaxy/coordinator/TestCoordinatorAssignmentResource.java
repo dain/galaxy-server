@@ -15,6 +15,7 @@ package com.proofpoint.galaxy.coordinator;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableList.Builder;
+import com.google.common.collect.ImmutableMap;
 import com.proofpoint.galaxy.shared.AgentStatus;
 import com.proofpoint.galaxy.shared.SlotLifecycleState;
 import com.proofpoint.galaxy.shared.MockUriInfo;
@@ -54,6 +55,9 @@ public class TestCoordinatorAssignmentResource
     private Coordinator coordinator;
     private String agentId;
     private int prefixSize;
+    private UUID apple1SlotId;
+    private UUID apple2SlotId;
+    private UUID bananaSlotId;
 
     @BeforeMethod
     public void setup()
@@ -67,21 +71,38 @@ public class TestCoordinatorAssignmentResource
                 new MockRemoteAgentFactory(),
                 urlResolver,
                 MOCK_CONFIG_REPO,
-                new LocalConfigRepository(new CoordinatorConfig(), null),
                 new LocalProvisioner(),
                 new InMemoryStateManager(),
                 new MockServiceInventory());
         resource = new CoordinatorAssignmentResource(coordinator);
 
-        SlotStatus appleSlotStatus1 = new SlotStatus(UUID.randomUUID(), "apple1", URI.create("fake://appleServer1/v1/agent/slot/apple1"), "location", STOPPED, APPLE_ASSIGNMENT,
-                "/apple1"
-        );
-        SlotStatus appleSlotStatus2 = new SlotStatus(UUID.randomUUID(), "apple2", URI.create("fake://appleServer2/v1/agent/slot/apple1"), "location", STOPPED, APPLE_ASSIGNMENT,
-                "/apple2"
-        );
-        SlotStatus bananaSlotStatus = new SlotStatus(UUID.randomUUID(), "banana", URI.create("fake://bananaServer/v1/agent/slot/banana"), "location", STOPPED, BANANA_ASSIGNMENT,
-                "/banana"
-        );
+        apple1SlotId = UUID.randomUUID();
+        SlotStatus appleSlotStatus1 = new SlotStatus(apple1SlotId,
+                "apple1",
+                URI.create("fake://appleServer1/v1/agent/slot/apple1"),
+                "location",
+                STOPPED,
+                APPLE_ASSIGNMENT,
+                "/apple1",
+                ImmutableMap.<String, Integer>of());
+        apple2SlotId = UUID.randomUUID();
+        SlotStatus appleSlotStatus2 = new SlotStatus(apple2SlotId,
+                "apple2",
+                URI.create("fake://appleServer2/v1/agent/slot/apple1"),
+                "location",
+                STOPPED,
+                APPLE_ASSIGNMENT,
+                "/apple2",
+                ImmutableMap.<String, Integer>of());
+        bananaSlotId = UUID.randomUUID();
+        SlotStatus bananaSlotStatus = new SlotStatus(bananaSlotId,
+                "banana",
+                URI.create("fake://bananaServer/v1/agent/slot/banana"),
+                "location",
+                STOPPED,
+                BANANA_ASSIGNMENT,
+                "/banana",
+                ImmutableMap.<String, Integer>of());
 
         agentId = UUID.randomUUID().toString();
         AgentStatus agentStatus = new AgentStatus(agentId,
@@ -89,7 +110,8 @@ public class TestCoordinatorAssignmentResource
                 URI.create("fake://appleServer1/"),
                 "unknown/location",
                 "instance.type",
-                ImmutableList.of(appleSlotStatus1, appleSlotStatus2, bananaSlotStatus));
+                ImmutableList.of(appleSlotStatus1, appleSlotStatus2, bananaSlotStatus),
+                ImmutableMap.of("cpu", 8, "memory", 1024));
 
         prefixSize = max(CoordinatorSlotResource.MIN_PREFIX_SIZE, Strings.shortestUniquePrefix(asList(
                 appleSlotStatus1.getId().toString(), appleSlotStatus2.getId().toString(), bananaSlotStatus.getId().toString())));
@@ -121,9 +143,9 @@ public class TestCoordinatorAssignmentResource
         Response response = resource.upgrade(upgradeVersions, uriInfo);
 
         AgentStatus agentStatus = coordinator.getAgentStatus(agentId);
-        SlotStatus apple1Status = agentStatus.getSlotStatus("apple1");
-        SlotStatus apple2Status = agentStatus.getSlotStatus("apple2");
-        SlotStatus bananaStatus = agentStatus.getSlotStatus("banana");
+        SlotStatus apple1Status = agentStatus.getSlotStatus(apple1SlotId);
+        SlotStatus apple2Status = agentStatus.getSlotStatus(apple2SlotId);
+        SlotStatus bananaStatus = agentStatus.getSlotStatus(bananaSlotId);
 
         assertOkResponse(response, SlotLifecycleState.STOPPED, apple1Status, apple2Status);
         assertNull(response.getMetadata().get("Content-Type")); // content type is set by jersey based on @Produces

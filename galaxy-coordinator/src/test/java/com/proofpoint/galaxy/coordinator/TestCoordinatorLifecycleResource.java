@@ -15,6 +15,7 @@ package com.proofpoint.galaxy.coordinator;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableList.Builder;
+import com.google.common.collect.ImmutableMap;
 import com.proofpoint.galaxy.shared.AgentStatus;
 import com.proofpoint.galaxy.shared.SlotLifecycleState;
 import com.proofpoint.galaxy.shared.MockUriInfo;
@@ -55,6 +56,9 @@ public class TestCoordinatorLifecycleResource
     private Coordinator coordinator;
     private String agentId;
     private int prefixSize;
+    private UUID apple1SlotId;
+    private UUID apple2SlotId;
+    private UUID bananaSlotId;
 
     @BeforeMethod
     public void setup()
@@ -68,30 +72,35 @@ public class TestCoordinatorLifecycleResource
                 new MockRemoteAgentFactory(),
                 urlResolver,
                 MOCK_CONFIG_REPO,
-                new LocalConfigRepository(new CoordinatorConfig(), null),
                 new LocalProvisioner(),
                 new InMemoryStateManager(),
                 new MockServiceInventory());
         resource = new CoordinatorLifecycleResource(coordinator);
 
-        SlotStatus appleSlotStatus1 = new SlotStatus(UUID.randomUUID(),
+        apple1SlotId = UUID.randomUUID();
+        SlotStatus appleSlotStatus1 = new SlotStatus(apple1SlotId,
                 "apple1",
                 URI.create("fake://foo/v1/agent/slot/apple1"),
                 "location", STOPPED,
                 APPLE_ASSIGNMENT,
-                "/apple1");
-        SlotStatus appleSlotStatus2 = new SlotStatus(UUID.randomUUID(),
+                "/apple1",
+                ImmutableMap.<String, Integer>of());
+        apple2SlotId = UUID.randomUUID();
+        SlotStatus appleSlotStatus2 = new SlotStatus(apple2SlotId,
                 "apple2",
                 URI.create("fake://foo/v1/agent/slot/apple1"),
                 "location", STOPPED,
                 APPLE_ASSIGNMENT,
-                "/apple2");
-        SlotStatus bananaSlotStatus = new SlotStatus(UUID.randomUUID(),
+                "/apple2",
+                ImmutableMap.<String, Integer>of());
+        bananaSlotId = UUID.randomUUID();
+        SlotStatus bananaSlotStatus = new SlotStatus(bananaSlotId,
                 "banana",
                 URI.create("fake://foo/v1/agent/slot/banana"),
                 "location", STOPPED,
                 BANANA_ASSIGNMENT,
-                "/banana");
+                "/banana",
+                ImmutableMap.<String, Integer>of());
 
         agentId = UUID.randomUUID().toString();
         AgentStatus agentStatus = new AgentStatus(agentId,
@@ -99,7 +108,8 @@ public class TestCoordinatorLifecycleResource
                 URI.create("fake://foo/"),
                 "unknown/location",
                 "instance.type",
-                ImmutableList.of(appleSlotStatus1, appleSlotStatus2, bananaSlotStatus));
+                ImmutableList.of(appleSlotStatus1, appleSlotStatus2, bananaSlotStatus),
+                ImmutableMap.of("cpu", 8, "memory", 1024));
 
         prefixSize = max(CoordinatorSlotResource.MIN_PREFIX_SIZE, Strings.shortestUniquePrefix(asList(
                 appleSlotStatus1.getId().toString(), appleSlotStatus2.getId().toString(),
@@ -114,45 +124,45 @@ public class TestCoordinatorLifecycleResource
         UriInfo uriInfo = MockUriInfo.from("http://localhost/v1/slot/lifecycle?binary=*:apple:*");
 
         // default state is stopped
-        assertSlotState("apple1", STOPPED);
-        assertSlotState("apple1", STOPPED);
-        assertSlotState("banana", STOPPED);
+        assertSlotState(apple1SlotId, STOPPED);
+        assertSlotState(apple2SlotId, STOPPED);
+        assertSlotState(bananaSlotId, STOPPED);
 
         // stopped.start => running
-        assertOkResponse(resource.setState("running", uriInfo), RUNNING, "apple1", "apple2");
-        assertSlotState("apple1", RUNNING);
-        assertSlotState("apple1", RUNNING);
-        assertSlotState("banana", STOPPED);
+        assertOkResponse(resource.setState("running", uriInfo), RUNNING, apple1SlotId, apple2SlotId);
+        assertSlotState(apple1SlotId, RUNNING);
+        assertSlotState(apple2SlotId, RUNNING);
+        assertSlotState(bananaSlotId, STOPPED);
 
         // running.start => running
-        assertOkResponse(resource.setState("running", uriInfo), RUNNING, "apple1", "apple2");
-        assertSlotState("apple1", RUNNING);
-        assertSlotState("apple1", RUNNING);
-        assertSlotState("banana", STOPPED);
+        assertOkResponse(resource.setState("running", uriInfo), RUNNING, apple1SlotId, apple2SlotId);
+        assertSlotState(apple1SlotId, RUNNING);
+        assertSlotState(apple2SlotId, RUNNING);
+        assertSlotState(bananaSlotId, STOPPED);
 
         // running.stop => stopped
-        assertOkResponse(resource.setState("stopped", uriInfo), STOPPED, "apple1", "apple2");
-        assertSlotState("apple1", STOPPED);
-        assertSlotState("apple1", STOPPED);
-        assertSlotState("banana", STOPPED);
+        assertOkResponse(resource.setState("stopped", uriInfo), STOPPED, apple1SlotId, apple2SlotId);
+        assertSlotState(apple1SlotId, STOPPED);
+        assertSlotState(apple2SlotId, STOPPED);
+        assertSlotState(bananaSlotId, STOPPED);
 
         // stopped.stop => stopped
-        assertOkResponse(resource.setState("stopped", uriInfo), STOPPED, "apple1", "apple2");
-        assertSlotState("apple1", STOPPED);
-        assertSlotState("apple1", STOPPED);
-        assertSlotState("banana", STOPPED);
+        assertOkResponse(resource.setState("stopped", uriInfo), STOPPED, apple1SlotId, apple2SlotId);
+        assertSlotState(apple1SlotId, STOPPED);
+        assertSlotState(apple2SlotId, STOPPED);
+        assertSlotState(bananaSlotId, STOPPED);
 
         // stopped.restart => running
-        assertOkResponse(resource.setState("restarting", uriInfo), RUNNING, "apple1", "apple2");
-        assertSlotState("apple1", RUNNING);
-        assertSlotState("apple1", RUNNING);
-        assertSlotState("banana", STOPPED);
+        assertOkResponse(resource.setState("restarting", uriInfo), RUNNING, apple1SlotId, apple2SlotId);
+        assertSlotState(apple1SlotId, RUNNING);
+        assertSlotState(apple2SlotId, RUNNING);
+        assertSlotState(bananaSlotId, STOPPED);
 
         // running.restart => running
-        assertOkResponse(resource.setState("restarting", uriInfo), RUNNING, "apple1", "apple2");
-        assertSlotState("apple1", RUNNING);
-        assertSlotState("apple2", RUNNING);
-        assertSlotState("banana", STOPPED);
+        assertOkResponse(resource.setState("restarting", uriInfo), RUNNING, apple1SlotId, apple2SlotId);
+        assertSlotState(apple1SlotId, RUNNING);
+        assertSlotState(apple2SlotId, RUNNING);
+        assertSlotState(bananaSlotId, STOPPED);
     }
 
     @Test
@@ -175,14 +185,14 @@ public class TestCoordinatorLifecycleResource
         resource.setState("running", MockUriInfo.from("http://localhost/v1/slot/lifecycle"));
     }
 
-    private void assertOkResponse(Response response, SlotLifecycleState state, String... slotNames)
+    private void assertOkResponse(Response response, SlotLifecycleState state, UUID... slotIds)
     {
         assertEquals(response.getStatus(), Response.Status.OK.getStatusCode());
 
         AgentStatus agentStatus = coordinator.getAgentStatus(agentId);
         Builder<SlotStatusRepresentation> builder = ImmutableList.builder();
-        for (String slotName : slotNames) {
-            SlotStatus slotStatus = agentStatus.getSlotStatus(slotName);
+        for (UUID slotId : slotIds) {
+            SlotStatus slotStatus = agentStatus.getSlotStatus(slotId);
             builder.add(SlotStatusRepresentation.from(slotStatus.updateState(state), prefixSize));
             assertEquals(slotStatus.getAssignment(), APPLE_ASSIGNMENT);
         }
@@ -190,9 +200,9 @@ public class TestCoordinatorLifecycleResource
         assertNull(response.getMetadata().get("Content-Type")); // content type is set by jersey based on @Produces
     }
 
-    private void assertSlotState(String slotName, SlotLifecycleState state)
+    private void assertSlotState(UUID slotId, SlotLifecycleState state)
     {
-        assertEquals(coordinator.getAgentStatus(agentId).getSlotStatus(slotName).getState(), state);
+        assertEquals(coordinator.getAgentStatus(agentId).getSlotStatus(slotId).getState(), state);
 
     }
 }

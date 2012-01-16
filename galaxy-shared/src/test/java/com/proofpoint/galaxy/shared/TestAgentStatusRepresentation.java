@@ -15,6 +15,7 @@ package com.proofpoint.galaxy.shared;
 
 import com.google.common.base.Charsets;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.io.Resources;
 import com.proofpoint.json.JsonCodec;
 import org.testng.annotations.Test;
@@ -48,8 +49,10 @@ public class TestAgentStatusRepresentation
                             APPLE_ASSIGNMENT.getBinary().toString(),
                             APPLE_ASSIGNMENT.getConfig().toString(),
                             STOPPED.toString(),
+                            "abc",
                             null,
                             "/apple",
+                            ImmutableMap.<String, Integer>of(),
                             null,
                             null,
                             null),
@@ -61,11 +64,15 @@ public class TestAgentStatusRepresentation
                             BANANA_ASSIGNMENT.getBinary().toString(),
                             BANANA_ASSIGNMENT.getConfig().toString(),
                             STOPPED.toString(),
+                            "abc",
                             null,
                             "/banana",
+                            ImmutableMap.<String, Integer>of(),
                             null,
                             null,
-                            null))
+                            null)),
+            ImmutableMap.of("cpu", 8, "memory", 1024),
+            "agent-version"
     );
 
     @Test
@@ -84,5 +91,14 @@ public class TestAgentStatusRepresentation
         AgentStatusRepresentation actual = codec.fromJson(json);
 
         assertEquals(actual, expected);
+        assertEquals(actual.getAgentId(), expected.getAgentId());
+        assertEquals(actual.getSelf(), expected.getSelf());
+        assertEquals(actual.getState(), expected.getState());
+        assertEquals(actual.getInstanceType(), expected.getInstanceType());
+        assertEquals(actual.getResources(), expected.getResources());
+        assertEquals(actual.getLocation(), expected.getLocation());
+        assertEquals(actual.getLocation(), expected.getLocation());
+        assertEquals(actual.getSlots(), expected.getSlots());
+        assertEquals(actual.getVersion(), expected.getVersion());
     }
 }
