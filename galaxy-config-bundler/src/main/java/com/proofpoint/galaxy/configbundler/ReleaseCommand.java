@@ -124,6 +124,10 @@ public class ReleaseCommand
         // get entries from tag
         final Map<String, ObjectId> entries = getEntries(repository, headCommit.getTree());
 
+        if (entries.isEmpty()) {
+            throw new RuntimeException("Cannot build an empty config package");
+        }
+
         URI uri = mavenRepository.upload(groupId, component, Integer.toString(version), ARTIFACT_TYPE, new BodyGenerator()
         {
             public void write(OutputStream out)
@@ -156,8 +160,13 @@ public class ReleaseCommand
     private Ref getLatestTag(Repository repository, String component)
     {
         Map<String, Ref> forComponent = Maps.filterKeys(repository.getTags(), startsWith(component + "-"));
-        String latest = Ordering.from(new VersionTagComparator()).max(forComponent.keySet());
-        return forComponent.get(latest);
+
+        if (!forComponent.isEmpty()) {
+            String latest = Ordering.from(new VersionTagComparator()).max(forComponent.keySet());
+            return forComponent.get(latest);
+        }
+
+        return null;
     }
 
     private Function<? super ObjectId, InputSupplier<InputStream>> getInputStreamSupplier(final Repository repository)
